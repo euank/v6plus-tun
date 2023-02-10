@@ -1,6 +1,6 @@
-##  map-e tun
+##  v6plus tun
 
-Rust code to setup a map-e ipv4-in-ipv6 tunnel.
+Rust code to setup a "v6 plus" tunnel using the well-known-ish map-e values.
 
 This is meant to work with the NTT hikari setup you'll encounter in large parts of Japan.
 
@@ -15,6 +15,16 @@ There are two modes of operation at the moment:
 2. ip tunnel creation - create the necessary linux interfaces and iptables rules to actually route ipv4 traffic
 
     This mode just shells out to linux utilities to accomplish everything. It's a glorified bash script, but whatever
+
+### Usage
+
+```
+WAN=""  # eth0, enp0s1, something like that
+ADDR="" # ipv6 address you were assigned
+
+# Must be run as root
+v6plus-tun setup-linux --wan $WAN $ADDR
+```
 
 ### Future work
 
