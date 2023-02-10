@@ -20,7 +20,7 @@ There are two modes of operation at the moment:
 
 It's intended to eventually implement the full map-e and tunneling logic as a userspace daemon, but who knows if I'll ever get to that.
 
-After all, 2 works fine, why bother, right?
+After all, linux tunnels work fine, why bother, right?
 
 ### License
 

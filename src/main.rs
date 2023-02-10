@@ -1,5 +1,6 @@
 use anyhow::bail;
 use clap::{Parser, Subcommand};
+use cmd_lib::run_cmd;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -120,13 +121,71 @@ impl Calculate {
     }
 }
 
+#[derive(Parser)]
+struct SetupLinux {
+    #[arg(required = true)]
+    addr: std::net::Ipv6Addr,
+    #[arg(
+        long = "wan",
+        required = true,
+        help = "WAN interface device, such as 'enp0s1' or 'eth0'"
+    )]
+    wan_dev: String,
+    #[arg(
+        long = "tun",
+        default_value = "ip4tun0",
+        help = "Tunnel interface to create, such as 'iptun0'"
+    )]
+    tun_dev: String,
+}
+
+impl SetupLinux {
+    fn setup(&self) -> anyhow::Result<()> {
+        let data = Calculate { addr: self.addr }.calculate()?;
+        let (tun_dev, br_addr, edge_addr, wan_dev) =
+            (&self.tun_dev, data.br_addr, data.edge_addr, &self.wan_dev);
+
+        // This is a copy of a well-known bash script that floats around the internet for people
+        // doing this sorta thing.
+        // Copyright unclear, I'll rewrite this in proper rust eventually, but for now I just want
+        // something that works.
+
+        // Add our side of the tunnel to the WAN interface, that's the CE addr
+        run_cmd!(ip -6 addr add $edge_addr dev $wan_dev)?;
+        // Add the tunnel
+        run_cmd!(ip -6 tunnel add $tun_dev mode ip4ip6 remote $br_addr local $edge_addr dev $wan_dev encaplimit none)?;
+        // TODO: calc mtu from WAN, not from hard coding it
+        run_cmd!(ip link set dev $tun_dev mtu 1460)?;
+        run_cmd!(ip link set dev $tun_dev up)?;
+
+        // all ipv4 goes over the tunnel
+        run_cmd!(ip route del default)?;
+        run_cmd!(ip route add default dev $tun_dev)?;
+
+        // and now nat rules
+        // Major TODO, we should not be flushing nat, we should be creating a chain and jumping to
+        // it and playing nice with other iptables users.
+        run_cmd!(iptables -t nat -F)?;
+        let num_ranges = data.port_ranges.len(); // always 15
+        let ipv4_addr = data.ipv4_addr;
+
+        for (i, (start, end)) in data.port_ranges.iter().enumerate() {
+            let mark = 0x66 + i; // arbitrary
+            run_cmd!(iptables -t nat -A PREROUTING -m statistic --mode nth --every $num_ranges  --packet $i -j MARK --set-mark $mark)?;
+            run_cmd!(iptables -t nat -A OUTPUT -m statistic --mode nth --every $num_ranges --packet $i -j MARK --set-mark $mark)?;
+            for proto in ["icmp", "tcp", "udp"] {
+                run_cmd!(iptables -t nat -A POSTROUTING -p $proto -o $tun_dev -m mark --mark $mark -j SNAT --to $ipv4_addr:$start-$end)?;
+            }
+        }
+        run_cmd!(iptables -t mangle -o $tun_dev --insert FORWARD 1 -p tcp --tcp-flags SYN,RST SYN -m tcpmss --mss 1400:65495 -j TCPMSS --clamp-mss-to-pmtu)?;
+        Ok(())
+    }
+}
+
 #[derive(Subcommand)]
 enum Subcommands {
     Calculate(Calculate),
-    SetupLinux {
-        #[arg(required = true)]
-        addr: std::net::Ipv6Addr,
-    },
+    SetupLinux(SetupLinux),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -136,11 +195,8 @@ fn main() -> anyhow::Result<()> {
         Subcommands::Calculate(c) => {
             let data = c.calculate()?;
             println!("{data}");
+            Ok(())
         }
-        Subcommands::SetupLinux { addr: _ } => {
-            unimplemented!("TODO");
-        }
+        Subcommands::SetupLinux(s) => s.setup(),
     }
-
-    Ok(())
 }
