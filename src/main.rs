@@ -169,10 +169,12 @@ impl SetupLinux {
         let num_ranges = data.port_ranges.len(); // always 15
         let ipv4_addr = data.ipv4_addr;
 
+        // randomly snat to one of 15 port ranges externally based on our internally chosen sport.
+        // This gives us consistent routing, and also a reasonably even distribution.
+        let mark_base = 0x10;
+        run_cmd!(iptables -t mangle -I PREROUTING -j HMARK --hmark-tuple sport --hmark-mod $num_ranges --hmark-offset $mark_base --hmark-rnd 4)?;
         for (i, (start, end)) in data.port_ranges.iter().enumerate() {
-            let mark = 0x66 + i; // arbitrary
-            run_cmd!(iptables -t nat -A PREROUTING -m statistic --mode nth --every $num_ranges  --packet $i -j MARK --set-mark $mark)?;
-            run_cmd!(iptables -t nat -A OUTPUT -m statistic --mode nth --every $num_ranges --packet $i -j MARK --set-mark $mark)?;
+            let mark = mark_base + i; // arbitrary
             for proto in ["icmp", "tcp", "udp"] {
                 run_cmd!(iptables -t nat -A POSTROUTING -p $proto -o $tun_dev -m mark --mark $mark -j SNAT --to $ipv4_addr:$start-$end)?;
             }
