@@ -137,13 +137,24 @@ struct SetupLinux {
         help = "Tunnel interface to create, such as 'iptun0'"
     )]
     tun_dev: String,
+    #[arg(
+        long = "add-ipv4-addr",
+        default_value = "false",
+        help = "Add your public ipv4 address to the wan interface"
+    )]
+    add_ipv4_wan: bool,
 }
 
 impl SetupLinux {
     fn setup(&self) -> anyhow::Result<()> {
         let data = Calculate { addr: self.addr }.calculate()?;
-        let (tun_dev, br_addr, edge_addr, wan_dev) =
-            (&self.tun_dev, data.br_addr, data.edge_addr, &self.wan_dev);
+        let (tun_dev, br_addr, edge_addr, wan_dev, ipv4_addr) = (
+            &self.tun_dev,
+            data.br_addr,
+            data.edge_addr,
+            &self.wan_dev,
+            data.ipv4_addr,
+        );
 
         // This is a copy of a well-known bash script that floats around the internet for people
         // doing this sorta thing.
@@ -167,7 +178,6 @@ impl SetupLinux {
         // it and playing nice with other iptables users.
         run_cmd!(iptables -t nat -F)?;
         let num_ranges = data.port_ranges.len(); // always 15
-        let ipv4_addr = data.ipv4_addr;
 
         // randomly snat to one of 15 port ranges externally based on our internally chosen sport.
         // This gives us consistent routing, and also a reasonably even distribution.
@@ -180,6 +190,11 @@ impl SetupLinux {
             }
         }
         run_cmd!(iptables -t mangle -o $tun_dev --insert FORWARD 1 -p tcp --tcp-flags SYN,RST SYN -m tcpmss --mss 1400:65495 -j TCPMSS --clamp-mss-to-pmtu)?;
+
+        if self.add_ipv4_wan {
+            run_cmd!(ip addr add $ipv4_addr dev $wan_dev)?;
+        }
+
         Ok(())
     }
 }
