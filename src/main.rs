@@ -143,6 +143,12 @@ struct SetupLinux {
         help = "Add your public ipv4 address to the wan interface"
     )]
     add_ipv4_wan: bool,
+    #[arg(
+        long = "no-snat-ipv4-ports",
+        default_value = "",
+        help = "IPv4 ports to not SNAT to, for example ports used for port-forwarding or such"
+    )]
+    no_snat_ports: Vec<u16>,
 }
 
 impl SetupLinux {
@@ -155,6 +161,37 @@ impl SetupLinux {
             &self.wan_dev,
             data.ipv4_addr,
         );
+
+        let mut port_ranges = data.port_ranges.clone();
+
+        // take into account extra no-snat ports
+        for &port in self.no_snat_ports.iter() {
+            // Find the port_range
+            let next = (port_ranges)
+                .iter()
+                .flat_map(|&(start, end)| {
+                    if port == start {
+                        vec![(start + 1, end)]
+                    } else if port == end {
+                        vec![(start, end - 1)]
+                    } else if port > start && port < end {
+                        vec![(start, port - 1), (port + 1, end)]
+                    } else {
+                        vec![(start, end)]
+                    }
+                })
+                .filter(|el| -> bool {
+                    // If we excluded an entire port range, or two consecutive ports, we can hit this,
+                    // trim out any zero-sized ranges
+                    el.0 <= el.1
+                })
+                .collect::<Vec<_>>();
+            if next == port_ranges {
+                bail!("specified 'no_snat_port' {port} was not in any port range")
+            }
+            port_ranges = next;
+        }
+
 
         // This is a copy of a well-known bash script that floats around the internet for people
         // doing this sorta thing.
@@ -177,13 +214,13 @@ impl SetupLinux {
         // Major TODO, we should not be flushing nat, we should be creating a chain and jumping to
         // it and playing nice with other iptables users.
         run_cmd!(iptables -t nat -F)?;
-        let num_ranges = data.port_ranges.len(); // always 15
+        let num_ranges = port_ranges.len();
 
-        // randomly snat to one of 15 port ranges externally based on our internally chosen sport.
+        // randomly snat to one of the port ranges externally based on our internally chosen sport.
         // This gives us consistent routing, and also a reasonably even distribution.
         let mark_base = 0x10;
         run_cmd!(iptables -t mangle -I PREROUTING -j HMARK --hmark-tuple sport --hmark-mod $num_ranges --hmark-offset $mark_base --hmark-rnd 4)?;
-        for (i, (start, end)) in data.port_ranges.iter().enumerate() {
+        for (i, (start, end)) in port_ranges.iter().enumerate() {
             let mark = mark_base + i; // arbitrary
             for proto in ["icmp", "tcp", "udp"] {
                 run_cmd!(iptables -t nat -A POSTROUTING -p $proto -o $tun_dev -m mark --mark $mark -j SNAT --to $ipv4_addr:$start-$end)?;
