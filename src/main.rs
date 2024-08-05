@@ -219,7 +219,7 @@ impl SetupLinux {
         // randomly snat to one of the port ranges externally based on our internally chosen sport.
         // This gives us consistent routing, and also a reasonably even distribution.
         let mark_base = 0x10;
-        run_cmd!(iptables -t mangle -I PREROUTING -j HMARK --hmark-tuple sport --hmark-mod $num_ranges --hmark-offset $mark_base --hmark-rnd 4)?;
+        run_cmd!(iptables -t nat -I POSTROUTING -j HMARK --hmark-tuple sport --hmark-mod $num_ranges --hmark-offset $mark_base --hmark-rnd 4)?;
         for (i, (start, end)) in port_ranges.iter().enumerate() {
             let mark = mark_base + i; // arbitrary
             for proto in ["icmp", "tcp", "udp"] {
