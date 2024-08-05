@@ -1,4 +1,4 @@
-use anyhow::{format_err, bail};
+use anyhow::{bail, format_err};
 use clap::{Parser, Subcommand};
 use cmd_lib::{run_cmd, run_fun};
 
@@ -199,14 +199,45 @@ impl SetupLinux {
         // Copyright unclear, I'll rewrite this in proper rust eventually, but for now I just want
         // something that works.
 
-        let wan_iface = ip6addrs.iter().filter(|f| &f.ifname == wan_dev).next().ok_or_else(|| format_err!("could not find wan dev"))?;
+        let wan_iface6 = ip6addrs
+            .iter()
+            .filter(|f| &f.ifname == wan_dev)
+            .next()
+            .ok_or_else(|| format_err!("could not find wan dev"))?;
 
         // Add our side of the tunnel to the WAN interface, that's the CE addr
-        if wan_iface.addr_info.iter().filter(|f| f.local == edge_addr).collect::<Vec<_>>().is_empty() {
+        if wan_iface6
+            .addr_info
+            .iter()
+            .filter(|f| f.local == Some(edge_addr.into()))
+            .collect::<Vec<_>>()
+            .is_empty()
+        {
             run_cmd!(ip -6 addr add $edge_addr dev $wan_dev)?;
         }
+
+        match serde_json::from_str::<Vec<IpAddrTunnel>>(&run_fun!(ip -j -6 tunnel)?)?
+            .into_iter()
+            .filter(|t| &t.ifname == tun_dev)
+            .next()
+        {
+            None => {
+                run_cmd!(ip -6 tunnel add $tun_dev mode ip4ip6 remote $br_addr local $edge_addr dev $wan_dev encaplimit none)?;
+            }
+            Some(tun) => {
+                if tun
+                    != (IpAddrTunnel {
+                        ifname: tun_dev.clone(),
+                        link: wan_dev.clone(),
+                        remote: Some(br_addr.into()),
+                        local: Some(edge_addr.into()),
+                    })
+                {
+                    bail!("expected different shape for {:?}", tun);
+                }
+            }
+        }
         // Add the tunnel
-        run_cmd!(ip -6 tunnel add $tun_dev mode ip4ip6 remote $br_addr local $edge_addr dev $wan_dev encaplimit none)?;
         // TODO: calc mtu from WAN, not from hard coding it
         run_cmd!(ip link set dev $tun_dev mtu 1460)?;
         run_cmd!(ip link set dev $tun_dev up)?;
@@ -233,7 +264,21 @@ impl SetupLinux {
         }
         run_cmd!(iptables -t mangle -o $tun_dev --insert FORWARD 1 -p tcp --tcp-flags SYN,RST SYN -m tcpmss --mss 1400:65495 -j TCPMSS --clamp-mss-to-pmtu)?;
 
-        if self.add_ipv4_wan {
+        let wan4addr: IpAddrIface =
+            serde_json::from_str::<Vec<IpAddrIface>>(&run_fun!(ip -j addr)?)?
+                .into_iter()
+                .filter(|t| &t.ifname == wan_dev)
+                .next()
+                .ok_or_else(|| format_err!("could not find wan dev"))?;
+
+        if self.add_ipv4_wan
+            && wan4addr
+                .addr_info
+                .iter()
+                .filter(|i| i.local == Some(ipv4_addr.into()))
+                .next()
+                .is_none()
+        {
             run_cmd!(ip addr add $ipv4_addr dev $wan_dev)?;
         }
 
@@ -260,14 +305,25 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
 struct IpAddrIface {
     addr_info: Vec<AddrInfo>,
     ifname: String,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
 struct AddrInfo {
     family: String,
-    local: std::net::IpAddr,
+    local: Option<std::net::IpAddr>,
+}
+
+#[derive(serde::Deserialize, Default, Debug, PartialEq)]
+#[serde(default)]
+struct IpAddrTunnel {
+    ifname: String,
+    link: String,
+    local: Option<std::net::IpAddr>,
+    remote: Option<std::net::IpAddr>,
 }
