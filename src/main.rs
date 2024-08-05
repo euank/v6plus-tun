@@ -1,6 +1,6 @@
-use anyhow::bail;
+use anyhow::{format_err, bail};
 use clap::{Parser, Subcommand};
-use cmd_lib::run_cmd;
+use cmd_lib::{run_cmd, run_fun};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -192,14 +192,19 @@ impl SetupLinux {
             port_ranges = next;
         }
 
+        let ip6addrs: Vec<IpAddrIface> = serde_json::from_str(&run_fun!(ip -j -6 addr)?)?;
 
         // This is a copy of a well-known bash script that floats around the internet for people
         // doing this sorta thing.
         // Copyright unclear, I'll rewrite this in proper rust eventually, but for now I just want
         // something that works.
 
+        let wan_iface = ip6addrs.iter().filter(|f| &f.ifname == wan_dev).next().ok_or_else(|| format_err!("could not find wan dev"))?;
+
         // Add our side of the tunnel to the WAN interface, that's the CE addr
-        run_cmd!(ip -6 addr add $edge_addr dev $wan_dev)?;
+        if wan_iface.addr_info.iter().filter(|f| f.local == edge_addr).collect::<Vec<_>>().is_empty() {
+            run_cmd!(ip -6 addr add $edge_addr dev $wan_dev)?;
+        }
         // Add the tunnel
         run_cmd!(ip -6 tunnel add $tun_dev mode ip4ip6 remote $br_addr local $edge_addr dev $wan_dev encaplimit none)?;
         // TODO: calc mtu from WAN, not from hard coding it
@@ -253,4 +258,16 @@ fn main() -> anyhow::Result<()> {
         }
         Subcommands::SetupLinux(s) => s.setup(),
     }
+}
+
+#[derive(serde::Deserialize)]
+struct IpAddrIface {
+    addr_info: Vec<AddrInfo>,
+    ifname: String,
+}
+
+#[derive(serde::Deserialize)]
+struct AddrInfo {
+    family: String,
+    local: std::net::IpAddr,
 }
