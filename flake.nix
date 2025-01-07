@@ -8,7 +8,7 @@
       inputs.flake-utils.follows = "flake-utils";
     };
     cargo2nix = {
-      url = "github:cargo2nix/cargo2nix/unstable";
+      url = "github:cargo2nix/cargo2nix/release-0.11.0";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
       inputs.rust-overlay.follows = "rust-overlay";

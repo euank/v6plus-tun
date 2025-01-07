@@ -201,8 +201,7 @@ impl SetupLinux {
 
         let wan_iface6 = ip6addrs
             .iter()
-            .filter(|f| &f.ifname == wan_dev)
-            .next()
+            .find(|f| &f.ifname == wan_dev)
             .ok_or_else(|| format_err!("could not find wan dev"))?;
 
         // Add our side of the tunnel to the WAN interface, that's the CE addr
@@ -218,8 +217,7 @@ impl SetupLinux {
 
         match serde_json::from_str::<Vec<IpAddrTunnel>>(&run_fun!(ip -j -6 tunnel)?)?
             .into_iter()
-            .filter(|t| &t.ifname == tun_dev)
-            .next()
+            .find(|t| &t.ifname == tun_dev)
         {
             None => {
                 run_cmd!(ip -6 tunnel add $tun_dev mode ip4ip6 remote $br_addr local $edge_addr dev $wan_dev encaplimit none)?;
@@ -247,37 +245,39 @@ impl SetupLinux {
         run_cmd!(ip route add default dev $tun_dev)?;
 
         // and now nat rules
-        // Major TODO, we should not be flushing nat, we should be creating a chain and jumping to
-        // it and playing nice with other iptables users.
-        run_cmd!(iptables -t nat -F)?;
+        // Ignore errors in case it doesn't exist
+        _ = run_cmd!(iptables -t nat -F ipv4-tun-hmark);
+        run_cmd!(iptables -t nat -N ipv4-tun-hmark)?;
         let num_ranges = port_ranges.len();
 
         // randomly snat to one of the port ranges externally based on our internally chosen sport.
         // This gives us consistent routing, and also a reasonably even distribution.
         let mark_base = 0x10;
-        run_cmd!(iptables -t nat -I POSTROUTING -j HMARK --hmark-tuple sport --hmark-mod $num_ranges --hmark-offset $mark_base --hmark-rnd 4)?;
+        run_cmd!(iptables -t nat -A ipv4-tun-hmark -j HMARK --hmark-tuple sport --hmark-mod $num_ranges --hmark-offset $mark_base --hmark-rnd 4)?;
         for (i, (start, end)) in port_ranges.iter().enumerate() {
             let mark = mark_base + i; // arbitrary
             for proto in ["icmp", "tcp", "udp"] {
-                run_cmd!(iptables -t nat -A POSTROUTING -p $proto -o $tun_dev -m mark --mark $mark -j SNAT --to $ipv4_addr:$start-$end)?;
+                run_cmd!(iptables -t nat -A ipv4-tun-hmark -p $proto -o $tun_dev -m mark --mark $mark -j SNAT --to $ipv4_addr:$start-$end)?;
             }
+        }
+        // jump to our chain at the end
+        if run_cmd!(iptables -t nat -C POSTROUTING -j ipv4-tun-hmark).is_err() {
+            // rule doesn't exist presumably, add it
+            run_cmd!(iptables -t nat -A POSTROUTING -j ipv4-tun-hmark)?;
         }
         run_cmd!(iptables -t mangle -o $tun_dev --insert FORWARD 1 -p tcp --tcp-flags SYN,RST SYN -m tcpmss --mss 1400:65495 -j TCPMSS --clamp-mss-to-pmtu)?;
 
         let wan4addr: IpAddrIface =
             serde_json::from_str::<Vec<IpAddrIface>>(&run_fun!(ip -j addr)?)?
                 .into_iter()
-                .filter(|t| &t.ifname == wan_dev)
-                .next()
+                .find(|t| &t.ifname == wan_dev)
                 .ok_or_else(|| format_err!("could not find wan dev"))?;
 
         if self.add_ipv4_wan
-            && wan4addr
+            && !wan4addr
                 .addr_info
                 .iter()
-                .filter(|i| i.local == Some(ipv4_addr.into()))
-                .next()
-                .is_none()
+                .any(|i| i.local == Some(ipv4_addr.into()))
         {
             run_cmd!(ip addr add $ipv4_addr dev $wan_dev)?;
         }
